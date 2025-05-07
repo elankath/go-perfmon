@@ -5,16 +5,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/elankath/go-perfmon/api"
-	"github.com/go-echarts/go-echarts/v2/charts"
-	"github.com/go-echarts/go-echarts/v2/components"
-	"github.com/go-echarts/go-echarts/v2/opts"
-	"github.com/shirou/gopsutil/process"
 	"log/slog"
 	"os"
 	"path"
 	"strings"
 	"time"
+
+	"github.com/elankath/go-perfmon/api"
+	"github.com/go-echarts/go-echarts/v2/charts"
+	"github.com/go-echarts/go-echarts/v2/components"
+	"github.com/go-echarts/go-echarts/v2/opts"
+	"github.com/shirou/gopsutil/process"
 )
 
 type basicPerfMon struct {
@@ -203,14 +204,14 @@ func generateRssMemoryChart(procName string, reportDir string, metrics []Metric)
 	var yValsRss []opts.LineData
 	for _, m := range metrics {
 		xVals = append(xVals, m.ProbeTime.Format("15:04:05"))
-		yValsRss = append(yValsRss, opts.LineData{Value: m.MemRSS})
+		yValsRss = append(yValsRss, opts.LineData{Value: m.MemRSS / (1024 * 1024)})
 	}
 
 	line := charts.NewLine()
 
 	line.SetGlobalOptions(
 		charts.WithXAxisOpts(opts.XAxis{Name: "Time"}),
-		charts.WithYAxisOpts(opts.YAxis{Name: "RSS Memory"}),
+		charts.WithYAxisOpts(opts.YAxis{Name: "RSS Memory (MB)"}),
 		charts.WithTitleOpts(opts.Title{
 			Title: "Memory usage over time",
 			//Subtitle: fmt.Sprintf("Time based over %s interval"),
@@ -227,14 +228,14 @@ func generateVmsMemoryChart(procName string, reportDir string, metrics []Metric)
 	var yValsVms []opts.LineData
 	for _, m := range metrics {
 		xVals = append(xVals, m.ProbeTime.Format("15:04:05"))
-		yValsVms = append(yValsVms, opts.LineData{Value: m.MemVMS})
+		yValsVms = append(yValsVms, opts.LineData{Value: m.MemVMS / (1024 * 1024 * 1024)})
 	}
 
 	line := charts.NewLine()
 
 	line.SetGlobalOptions(
 		charts.WithXAxisOpts(opts.XAxis{Name: "Time"}),
-		charts.WithYAxisOpts(opts.YAxis{Name: "VMS Memory"}),
+		charts.WithYAxisOpts(opts.YAxis{Name: "VMS Memory (GB)"}),
 		charts.WithTitleOpts(opts.Title{
 			Title: "Memory usage over time",
 			//Subtitle: fmt.Sprintf("Time based over %s interval"),
