@@ -15,4 +15,5 @@ type PerfMonOpts struct {
 	Interval     time.Duration
 	WaitForProc  bool
 	ErrThreshold int
+	ReportDir    string
 }

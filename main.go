@@ -48,6 +48,7 @@ func main() {
 		Interval:     mainOpts.Interval,
 		WaitForProc:  mainOpts.WaitForProc,
 		ErrThreshold: mainOpts.ErrThreshold,
+		ReportDir:    mainOpts.ReportDir,
 	}
 	perfmon, err := core.NewBasicPerfMon(opts)
 	if err != nil {

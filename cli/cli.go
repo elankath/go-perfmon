@@ -21,6 +21,7 @@ type MainOpts struct {
 	WaitForProc  bool
 	ErrThreshold int
 	ProcessNames []string
+	ReportDir    string
 }
 
 func ValidateMainOpts(mainOpts *MainOpts) (exitCode int, err error) {
@@ -31,6 +32,7 @@ func SetupMainFlagsToOpts(mainOpts *MainOpts) *flag.FlagSet {
 	mainFlags := flag.NewFlagSet("main", flag.ContinueOnError)
 	mainFlags.BoolVar(&mainOpts.WaitForProc, "wait", true, "Whether to wait until processes are available for monitoring or not")
 	mainFlags.IntVar(&mainOpts.ErrThreshold, "errt", 3, "Probe error threshold beyond which proc monitoring will stop")
+	mainFlags.StringVar(&mainOpts.ReportDir, "rd", "/tmp", "Directory for reports and charts")
 	standardUsage := mainFlags.PrintDefaults
 	mainFlags.Usage = func() {
 		_, _ = fmt.Fprintln(os.Stderr, "Usage: perform <flags> <args>")
