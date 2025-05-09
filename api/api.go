@@ -5,15 +5,16 @@ import (
 	"time"
 )
 
-type PerfMon interface {
+type ProcessMonitor interface {
 	Start(ctx context.Context) error
-	Stop() error
+	Stop()
 }
 
-type PerfMonOpts struct {
-	ProcessNames []string
-	Interval     time.Duration
-	WaitForProc  bool
-	ErrThreshold int
-	ReportDir    string
+type ProcessMonitorConfig struct {
+	ProcessNames     []string
+	Interval         time.Duration
+	WaitForProc      bool
+	ErrThreshold     int
+	ReportDir        string
+	ReportNamePrefix string
 }

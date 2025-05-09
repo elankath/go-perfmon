@@ -6,5 +6,8 @@ var (
 	ErrMissingOpt        = errors.New("missing option")
 	ErrCannotFindProcess = errors.New("cannot find process")
 
-	ErrGetMetrics = errors.New("cannot get metrics")
+	ErrGetMetrics    = errors.New("cannot get metrics")
+	ErrStoppedByUser = errors.New("stopped by user")
+
+	ErrThresholdExceeded = errors.New("error threshold exceeded")
 )

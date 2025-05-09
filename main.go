@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/elankath/go-perfmon/api"
-	"github.com/elankath/go-perfmon/cli"
-	"github.com/elankath/go-perfmon/core"
+	"github.com/elankath/procmon/api"
+	"github.com/elankath/procmon/cli"
+	"github.com/elankath/procmon/core"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -26,36 +26,32 @@ func main() {
 		os.Exit(cli.ExitOptsParseErr)
 	}
 
+	mainOpts.ProcessNames = mainFlags.Args()
+	if mainOpts.Interval == time.Duration(0) {
+		mainOpts.Interval = 10 * time.Second
+	}
+
 	exitCode, err = cli.ValidateMainOpts(&mainOpts)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Err: %v\n", err.Error())
 		mainFlags.Usage()
 		os.Exit(exitCode)
 	}
-	mainOpts.ProcessNames = mainFlags.Args()
-	if len(mainOpts.ProcessNames) == 0 {
-		_, _ = fmt.Fprintf(os.Stderr, "process name args are mandatory")
-		mainFlags.Usage()
-		os.Exit(cli.ExitMissingArgs)
-	}
 
-	if mainOpts.Interval == time.Duration(0) {
-		mainOpts.Interval = 10 * time.Second
+	config := api.ProcessMonitorConfig{
+		ProcessNames:     mainOpts.ProcessNames,
+		Interval:         mainOpts.Interval,
+		WaitForProc:      mainOpts.WaitForProc,
+		ErrThreshold:     mainOpts.ErrThreshold,
+		ReportDir:        mainOpts.ReportDir,
+		ReportNamePrefix: mainOpts.ReportNamePrefix,
 	}
-
-	opts := api.PerfMonOpts{
-		ProcessNames: mainOpts.ProcessNames,
-		Interval:     mainOpts.Interval,
-		WaitForProc:  mainOpts.WaitForProc,
-		ErrThreshold: mainOpts.ErrThreshold,
-		ReportDir:    mainOpts.ReportDir,
-	}
-	perfmon, err := core.NewBasicPerfMon(opts)
+	procmon, err := core.NewBasicProcessMonitor(config)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Err: %v\n", err.Error())
-		os.Exit(cli.ExitCreatePerfMon)
+		os.Exit(cli.ExitCreateprocmon)
 	}
-	fmt.Printf("perfmon Opts: %v\n", opts)
+	slog.Info("procmon config", "config", config)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -63,10 +59,10 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	err = perfmon.Start(ctx)
+	err = procmon.Start(ctx)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Err: %v\n", err.Error())
-		os.Exit(cli.ExitStartPerfMon)
+		os.Exit(cli.ExitStartprocmon)
 	}
 	sig := <-sigCh
 	slog.Info("Received shutdown signal, initiating graceful shutdown...", "signal", sig)

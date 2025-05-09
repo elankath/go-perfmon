@@ -1,4 +1,4 @@
-module github.com/elankath/go-perfmon
+module github.com/elankath/procmon
 
 go 1.24.1
 

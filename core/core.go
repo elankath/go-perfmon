@@ -11,20 +11,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/elankath/go-perfmon/api"
+	"github.com/elankath/procmon/api"
 	"github.com/go-echarts/go-echarts/v2/charts"
 	"github.com/go-echarts/go-echarts/v2/components"
 	"github.com/go-echarts/go-echarts/v2/opts"
 	"github.com/shirou/gopsutil/process"
 )
 
-type basicPerfMon struct {
-	opts          api.PerfMonOpts
+type basicProcessMonitor struct {
+	cfg           api.ProcessMonitorConfig
 	procByName    map[string]*process.Process
-	errChan       chan error
 	errCounter    int
 	metricsByName map[string][]Metric
-	cancel        context.CancelFunc
+	cancel        context.CancelCauseFunc
 }
 
 type Metric struct {
@@ -34,28 +33,23 @@ type Metric struct {
 	CPU       float64
 }
 
-func NewBasicPerfMon(opts api.PerfMonOpts) (api.PerfMon, error) {
-	pm := &basicPerfMon{
-		opts:          opts,
+func NewBasicProcessMonitor(cfg api.ProcessMonitorConfig) (api.ProcessMonitor, error) {
+	pm := &basicProcessMonitor{
+		cfg:           cfg,
 		procByName:    make(map[string]*process.Process),
-		errChan:       make(chan error, 1),
 		metricsByName: make(map[string][]Metric),
 	}
-	for _, n := range opts.ProcessNames {
+	for _, n := range cfg.ProcessNames {
 		pm.procByName[n] = nil
 	}
 	return pm, nil
 }
 
-func (b *basicPerfMon) ErrCh() <-chan error {
-	return b.errChan
-}
-
-func (b *basicPerfMon) Start(ctx context.Context) error {
-	ctx, b.cancel = context.WithCancel(ctx)
+func (b *basicProcessMonitor) Start(ctx context.Context) error {
+	ctx, b.cancel = context.WithCancelCause(ctx)
 	var err error
 	var ok bool
-	if !b.opts.WaitForProc {
+	if !b.cfg.WaitForProc {
 		ok, err = b.registerProcesses()
 		if err != nil {
 			return nil
@@ -68,18 +62,18 @@ func (b *basicPerfMon) Start(ctx context.Context) error {
 			for {
 				select {
 				case <-ctx.Done():
-					slog.Info("Stopping perfmon due to context cancellation", "reason", ctx.Err())
+					slog.Info("Stopping procmon due to context cancellation", "reason", ctx.Err())
 					return
-				case <-time.After(b.opts.Interval):
+				case <-time.After(b.cfg.Interval):
 					slog.Info("Attempting to register processes")
 					ok, err := b.registerProcesses()
 					if err != nil {
 						slog.Info("non-recoverable error, stopping", "error", err)
-						b.errChan <- err
-						b.cancel()
+						b.Stop()
+						b.cancel(err)
 					}
 					if ok {
-						slog.Info("All processes are registered", "procNames", b.opts.ProcessNames)
+						slog.Info("All processes are registered", "procNames", b.cfg.ProcessNames)
 						return
 					}
 				}
@@ -87,24 +81,24 @@ func (b *basicPerfMon) Start(ctx context.Context) error {
 		}()
 	}
 	go b.monitorProcsEveryInterval(ctx)
-	slog.Info("Perfmon started", "procNames", b.opts.ProcessNames)
+	slog.Info("procmon started", "procNames", b.cfg.ProcessNames)
 	//<-b.stopChan
 	return nil
 }
 
-func (b *basicPerfMon) monitorProcsEveryInterval(ctx context.Context) {
+func (b *basicProcessMonitor) monitorProcsEveryInterval(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("Stopping perfmon due to context cancellation", "reason", ctx.Err())
+			slog.Info("Stopping procmon due to context cancellation", "reason", ctx.Err())
 			return
-		case <-time.After(b.opts.Interval):
+		case <-time.After(b.cfg.Interval):
 			b.monitorProcs()
 		}
 	}
 }
 
-func (b *basicPerfMon) monitorProcs() {
+func (b *basicProcessMonitor) monitorProcs() {
 	for n, proc := range b.procByName {
 		if proc == nil {
 			continue
@@ -158,93 +152,55 @@ func (b *basicPerfMon) monitorProcs() {
 	}
 }
 
-func (b *basicPerfMon) GenerateCharts() error {
+func (b *basicProcessMonitor) GenerateCharts() error {
+	var pageCharts []components.Charter
 	for procName, metrics := range b.metricsByName {
-		err := generateChart(procName, b.opts.ReportDir, metrics)
+		procCharts, err := createLineCharts(procName, metrics)
 		if err != nil {
 			return err
 		}
+		pageCharts = append(pageCharts, procCharts...)
 	}
-	return nil
-}
-
-func generateChart(procName string, reportDir string, metrics []Metric) error {
-	if len(metrics) < 2 {
-		slog.Warn("skipping charts since insufficient metric data points present", "procName", procName)
+	if len(pageCharts) == 0 {
 		return nil
 	}
 
-	cpuChart, err := generateCPUChart(procName, reportDir, metrics)
-	if err != nil {
-		return err
-	}
-	rssMemChart, err := generateRssMemoryChart(procName, reportDir, metrics)
-	if err != nil {
-		return err
-	}
-	vmsMemChart, err := generateVmsMemoryChart(procName, reportDir, metrics)
-	if err != nil {
-		return err
-	}
-	chartsPath := path.Join(reportDir, fmt.Sprintf("%s-charts.html", procName))
-
 	page := components.NewPage()
-	page.AddCharts(cpuChart, rssMemChart, vmsMemChart)
+	page.SetPageTitle(fmt.Sprintf("%s Charts", b.cfg.ReportNamePrefix))
+	page.AddCharts(pageCharts...)
+	chartsPath := path.Join(b.cfg.ReportDir, fmt.Sprintf("%s-charts.html", b.cfg.ReportNamePrefix))
 
-	err = writePage(chartsPath, page)
+	err := writePage(chartsPath, page)
 	if err != nil {
 		return err
 	}
-
 	return nil
 }
 
-func generateRssMemoryChart(procName string, reportDir string, metrics []Metric) (*charts.Line, error) {
-	var xVals []string
-	var yValsRss []opts.LineData
-	for _, m := range metrics {
-		xVals = append(xVals, m.ProbeTime.Format("15:04:05"))
-		yValsRss = append(yValsRss, opts.LineData{Value: m.MemRSS / (1024 * 1024)})
+func createLineCharts(procName string, metrics []Metric) (procCharts []components.Charter, err error) {
+	if len(metrics) < 2 {
+		slog.Warn("skipping charts since insufficient metric data points present", "procName", procName)
+		return
 	}
-
-	line := charts.NewLine()
-
-	line.SetGlobalOptions(
-		charts.WithXAxisOpts(opts.XAxis{Name: "Time"}),
-		charts.WithYAxisOpts(opts.YAxis{Name: "RSS Memory (MB)"}),
-		charts.WithTitleOpts(opts.Title{
-			Title: "Memory usage over time",
-			//Subtitle: fmt.Sprintf("Time based over %s interval"),
-		}))
-	line.SetXAxis(xVals).
-		AddSeries("Memory RSS", yValsRss).
-		SetSeriesOptions(charts.WithLineChartOpts(opts.LineChart{Smooth: opts.Bool(true)}))
-
-	return line, nil
-}
-
-func generateVmsMemoryChart(procName string, reportDir string, metrics []Metric) (*charts.Line, error) {
-	var xVals []string
-	var yValsVms []opts.LineData
-	for _, m := range metrics {
-		xVals = append(xVals, m.ProbeTime.Format("15:04:05"))
-		yValsVms = append(yValsVms, opts.LineData{Value: m.MemVMS / (1024 * 1024 * 1024)})
+	var cht *charts.Line
+	cht, err = generateCPUChart(procName, metrics)
+	if err != nil {
+		return
 	}
+	procCharts = append(procCharts, cht)
 
-	line := charts.NewLine()
+	cht, err = generateRssMemoryChart(procName, metrics)
+	if err != nil {
+		return
+	}
+	procCharts = append(procCharts, cht)
 
-	line.SetGlobalOptions(
-		charts.WithXAxisOpts(opts.XAxis{Name: "Time"}),
-		charts.WithYAxisOpts(opts.YAxis{Name: "VMS Memory (GB)"}),
-		charts.WithTitleOpts(opts.Title{
-			Title: "Memory usage over time",
-			//Subtitle: fmt.Sprintf("Time based over %s interval"),
-		}))
-	line.SetXAxis(xVals).
-		AddSeries("Memory VMS", yValsVms).
-		SetSeriesOptions(charts.WithLineChartOpts(opts.LineChart{Smooth: opts.Bool(true)}))
-
-	return line, nil
+	cht, err = generateVmsMemoryChart(procName, metrics)
+	if err != nil {
+		return
+	}
+	procCharts = append(procCharts, cht)
+	return
 }
 
 func writePage(chartPath string, page *components.Page) error {
@@ -263,7 +219,7 @@ func writePage(chartPath string, page *components.Page) error {
 	return nil
 }
 
-func generateCPUChart(procName string, reportDir string, metrics []Metric) (*charts.Line, error) {
+func generateCPUChart(procName string, metrics []Metric) (*charts.Line, error) {
 	var xVals []string
 	var yVals []opts.LineData
 	for _, m := range metrics {
@@ -277,7 +233,7 @@ func generateCPUChart(procName string, reportDir string, metrics []Metric) (*cha
 		charts.WithXAxisOpts(opts.XAxis{Name: "Time"}),
 		charts.WithYAxisOpts(opts.YAxis{Name: "CPU %"}),
 		charts.WithTitleOpts(opts.Title{
-			Title: "CPU usage over time",
+			Title: fmt.Sprintf("%s CPU usage", procName),
 			//Subtitle: fmt.Sprintf("Time based over %s interval"),
 		}))
 	line.SetXAxis(xVals).
@@ -287,12 +243,59 @@ func generateCPUChart(procName string, reportDir string, metrics []Metric) (*cha
 	return line, nil
 }
 
-func (b *basicPerfMon) handleMetricErr(err error) (ok bool) {
-	if b.errCounter > b.opts.ErrThreshold {
-		err = fmt.Errorf("%w: eror count exceeded threshold %d: %w", api.ErrGetMetrics, b.opts.ErrThreshold, err)
-		b.errChan <- err
+func generateRssMemoryChart(procName string, metrics []Metric) (*charts.Line, error) {
+	var xVals []string
+	var yValsRss []opts.LineData
+	for _, m := range metrics {
+		xVals = append(xVals, m.ProbeTime.Format("15:04:05"))
+		yValsRss = append(yValsRss, opts.LineData{Value: m.MemRSS / (1024 * 1024)})
+	}
+
+	line := charts.NewLine()
+
+	line.SetGlobalOptions(
+		charts.WithXAxisOpts(opts.XAxis{Name: "Time"}),
+		charts.WithYAxisOpts(opts.YAxis{Name: "RSS Memory (MB)"}),
+		charts.WithTitleOpts(opts.Title{
+			Title: fmt.Sprintf("%s RSS Memory", procName),
+			//Subtitle: fmt.Sprintf("Time based over %s interval"),
+		}))
+	line.SetXAxis(xVals).
+		AddSeries("Memory RSS", yValsRss).
+		SetSeriesOptions(charts.WithLineChartOpts(opts.LineChart{Smooth: opts.Bool(true)}))
+
+	return line, nil
+}
+
+func generateVmsMemoryChart(procName string, metrics []Metric) (*charts.Line, error) {
+	var xVals []string
+	var yValsVms []opts.LineData
+	for _, m := range metrics {
+		xVals = append(xVals, m.ProbeTime.Format("15:04:05"))
+		yValsVms = append(yValsVms, opts.LineData{Value: m.MemVMS / (1024 * 1024 * 1024)})
+	}
+
+	line := charts.NewLine()
+
+	line.SetGlobalOptions(
+		charts.WithXAxisOpts(opts.XAxis{Name: "Time"}),
+		charts.WithYAxisOpts(opts.YAxis{Name: "VMS Memory (GB)"}),
+		charts.WithTitleOpts(opts.Title{
+			Title: fmt.Sprintf("%s VMS Memory", procName),
+			//Subtitle: fmt.Sprintf("Time based over %s interval"),
+		}))
+	line.SetXAxis(xVals).
+		AddSeries("Memory VMS", yValsVms).
+		SetSeriesOptions(charts.WithLineChartOpts(opts.LineChart{Smooth: opts.Bool(true)}))
+
+	return line, nil
+}
+
+func (b *basicProcessMonitor) handleMetricErr(err error) (ok bool) {
+	if b.errCounter > b.cfg.ErrThreshold {
+		err = fmt.Errorf("%w: error count exceeded threshold %d: %w", api.ErrGetMetrics, b.cfg.ErrThreshold, err)
 		ok = false
-		b.cancel()
+		b.cancel(err)
 		return
 	}
 	b.errCounter++
@@ -300,10 +303,10 @@ func (b *basicPerfMon) handleMetricErr(err error) (ok bool) {
 	return
 }
 
-func (b *basicPerfMon) registerProcesses() (ok bool, err error) {
+func (b *basicProcessMonitor) registerProcesses() (ok bool, err error) {
 	var proc *process.Process
 	ok = true
-	for _, n := range b.opts.ProcessNames {
+	for _, n := range b.cfg.ProcessNames {
 		proc, err = findProcessByName(n)
 		if err != nil {
 			if errors.Is(err, api.ErrCannotFindProcess) {
@@ -335,16 +338,17 @@ func findProcessByName(procName string) (proc *process.Process, err error) {
 	return
 }
 
-func (b *basicPerfMon) Stop() error {
-	slog.Info("Stopping perfmon")
+func (b *basicProcessMonitor) stop(err error) {
 	if b.cancel != nil {
-		b.cancel()
-		return nil
+		b.cancel(err)
 	}
-	return fmt.Errorf("procmon does not appear to have been started")
+}
+func (b *basicProcessMonitor) Stop() {
+	slog.Info("Stopping procmon")
+	b.stop(api.ErrStoppedByUser)
 }
 
-var _ api.PerfMon = (*basicPerfMon)(nil)
+var _ api.ProcessMonitor = (*basicProcessMonitor)(nil)
 
 func findPIDsByName(processName string) ([]int32, error) {
 	var pids []int32

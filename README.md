@@ -1,15 +1,15 @@
-# procpulse
+# procmon
 Go CLI Tool and backing library that monitors when named processes specified as arguments come live and tracks cpu/mem until they die and produces report charts into a targer directory.
 
 ## Setup
 
-`go install github.com/elankath/procpulse`
+`go install github.com/elankath/procmon`
 
 
 ## Usage
-`procpulse <flags> <list of processnames to monitor>`
+`procmon <flags> <list of processnames to monitor>`
 
-Example: `procpulse -interval 30s kube-apiserver etcd`
+Example: `procmon -interval 30s kube-apiserver etcd`
 
 Flags:
 ```
