@@ -1,10 +1,15 @@
-# go-perfmon
-Go CLI Tool that monitors when named processes come live and charts cpu/mem until they die and produces report
+# procpulse
+Go CLI Tool and backing library that monitors when named processes specified as arguments come live and tracks cpu/mem until they die and produces report charts into a targer directory.
+
+## Setup
+
+`go install github.com/elankath/procpulse`
+
 
 ## Usage
-`go run main.go <flags> <list of processnames to monitor>`
+`procpulse <flags> <list of processnames to monitor>`
 
-Example: `go run main.go -interval 30s kube-apiserver etcd`
+Example: `procpulse -interval 30s kube-apiserver etcd`
 
 Flags:
 ```
