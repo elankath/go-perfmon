@@ -3,7 +3,7 @@ package api
 import "errors"
 
 var (
-	ErrMissingOpt        = errors.New("missing option")
+	ErrCreateReportDir   = errors.New("cannot create report directory")
 	ErrCannotFindProcess = errors.New("cannot find process")
 
 	ErrGetMetrics    = errors.New("cannot get metrics")

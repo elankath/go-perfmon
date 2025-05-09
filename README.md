@@ -9,16 +9,18 @@ Go CLI Tool and backing library that monitors when named processes specified as 
 ## Usage
 `procmon <flags> <list of processnames to monitor>`
 
-Example: `procmon -interval 30s kube-apiserver etcd`
+Example: `procmon -n <reportNamePrefix> -interval 30s kube-apiserver etcd`
 
 Flags:
-```
+```  
+  -n string
+    	report name prefix
+  -d string
+        Directory for reports and charts (default "/tmp")
   -errt int
         Probe error threshold beyond which proc monitoring will stop (default 3)
   -interval value
         monitoring interval (default 10s)
-  -rd string
-        Directory for reports and charts (default "/tmp")
   -wait
         Whether to wait until processes are available for monitoring or not (default true)
 ```

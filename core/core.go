@@ -42,6 +42,10 @@ func NewBasicProcessMonitor(cfg api.ProcessMonitorConfig) (api.ProcessMonitor, e
 	for _, n := range cfg.ProcessNames {
 		pm.procByName[n] = nil
 	}
+	err := os.MkdirAll(cfg.ReportDir, 0755)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", api.ErrCreateReportDir, err)
+	}
 	return pm, nil
 }
 
