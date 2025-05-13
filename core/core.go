@@ -1,12 +1,15 @@
 package core
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path"
 	"strings"
 	"time"
@@ -19,11 +22,12 @@ import (
 )
 
 type basicProcessMonitor struct {
-	cfg           api.ProcessMonitorConfig
-	procByName    map[string]*process.Process
-	errCounter    int
-	metricsByName map[string][]Metric
-	cancel        context.CancelCauseFunc
+	cfg               api.ProcessMonitorConfig
+	procByName        map[string]*process.Process
+	errCounter        int
+	procMetricsByName map[string][]Metric
+	cancel            context.CancelCauseFunc
+	ioMetrics         []IOMetric
 }
 
 type Metric struct {
@@ -33,11 +37,23 @@ type Metric struct {
 	CPU       float64
 }
 
+type IOMetric struct {
+	ProbeTime time.Time
+	DiskName  string
+	KBt       float32
+	TPS       int32
+	MBs       float32
+}
+
+func (I IOMetric) String() string {
+	return fmt.Sprintf("(time: %s, diskName: %s, KBt:%.2f, TPS:%d, MBs:%.2f", I.ProbeTime, I.DiskName, I.KBt, I.TPS, I.MBs)
+}
+
 func NewBasicProcessMonitor(cfg api.ProcessMonitorConfig) (api.ProcessMonitor, error) {
 	pm := &basicProcessMonitor{
-		cfg:           cfg,
-		procByName:    make(map[string]*process.Process),
-		metricsByName: make(map[string][]Metric),
+		cfg:               cfg,
+		procByName:        make(map[string]*process.Process),
+		procMetricsByName: make(map[string][]Metric),
 	}
 	for _, n := range cfg.ProcessNames {
 		pm.procByName[n] = nil
@@ -85,10 +101,93 @@ func (b *basicProcessMonitor) Start(ctx context.Context) error {
 		}()
 	}
 	go b.monitorProcsEveryInterval(ctx)
+	reader, err := launchIostat(ctx)
+	if err != nil {
+		return err
+	}
+	go func() {
+		err = parseIostatOutput(reader, b.addIOMetric)
+		if err != nil {
+			slog.Error("can not parse iostat output", "error", err)
+			b.cancel(err)
+			return
+		}
+	}()
 	slog.Info("procmon started", "procNames", b.cfg.ProcessNames)
 	//<-b.stopChan
 	return nil
 }
+
+func (b *basicProcessMonitor) addIOMetric(m IOMetric) {
+	b.ioMetrics = append(b.ioMetrics, m)
+}
+
+func launchIostat(ctx context.Context) (reader io.ReadCloser, err error) {
+	//var buf bytes.Buffer
+
+	command := exec.CommandContext(ctx, "iostat", "-d", "-w", "5", "-n", "1")
+	//command.Stdout = &buf
+	reader, err = command.StdoutPipe()
+	if err != nil {
+		return
+	}
+
+	slog.Info("Launching iostat")
+	err = command.Start()
+	if err != nil {
+		err = fmt.Errorf("failed to start iostat: %w", err)
+		return
+	}
+	//slog.Info("Waiting for 5s")
+	//<-time.After(5 * time.Second)
+
+	return
+}
+
+func parseIostatOutput(reader io.ReadCloser, addIOMetric func(metric IOMetric)) (err error) {
+	scanner := bufio.NewScanner(reader)
+
+	var m IOMetric
+	for scanner.Scan() {
+		text := scanner.Text()
+		line := strings.TrimSpace(text)
+		if strings.HasPrefix(line, "disk") {
+			m.DiskName = line
+			continue
+		}
+		if strings.HasPrefix(line, "KB/t") {
+			continue
+		}
+		m.KBt, m.TPS, m.MBs, err = parseIostatLine(line)
+		if err != nil {
+			slog.Error("can not parse Iostat line", "line", line, "error", err)
+			return
+		}
+		m.ProbeTime = time.Now()
+		slog.Info("Metric value.", "metric", m)
+		addIOMetric(m)
+		m = IOMetric{DiskName: m.DiskName}
+	}
+	return
+}
+
+func parseIostatLine(line string) (kbt float32, tps int32, mbs float32, err error) {
+	//TODO: figure out how to round decimal places
+	n, err := fmt.Sscanf(line, "%f %d %f", &kbt, &tps, &mbs)
+	if err != nil {
+		return
+	}
+	if n < 3 {
+		err = fmt.Errorf("expected 3 items to be parsed for line: %q", line)
+	}
+	//kbt = RoundToTwoDecimals(kbt)
+	//mbs = RoundToTwoDecimals(mbs)
+	return
+}
+
+//func RoundToTwoDecimals(f float32) float32 {
+//	return float32(math.Round(float64(f)*100) / 100)
+//}
 
 func (b *basicProcessMonitor) monitorProcsEveryInterval(ctx context.Context) {
 	for {
@@ -142,12 +241,12 @@ func (b *basicProcessMonitor) monitorProcs() {
 			MemRSS:    mem.RSS,
 			MemVMS:    mem.VMS,
 		}
-		metrics := b.metricsByName[n]
+		metrics := b.procMetricsByName[n]
 		if metrics == nil {
 			metrics = make([]Metric, 0, 200)
 		}
 		metrics = append(metrics, m)
-		b.metricsByName[n] = metrics
+		b.procMetricsByName[n] = metrics
 		slog.Info("Metric captured", "procName", n, "CPU", m.CPU, "MemRSS", m.MemRSS, "MemVMS", m.MemVMS)
 	}
 	err := b.GenerateCharts()
@@ -158,8 +257,8 @@ func (b *basicProcessMonitor) monitorProcs() {
 
 func (b *basicProcessMonitor) GenerateCharts() error {
 	var pageCharts []components.Charter
-	for procName, metrics := range b.metricsByName {
-		procCharts, err := createLineCharts(procName, metrics)
+	for procName, metrics := range b.procMetricsByName {
+		procCharts, err := createProcessLineCharts(procName, metrics)
 		if err != nil {
 			return err
 		}
@@ -168,20 +267,25 @@ func (b *basicProcessMonitor) GenerateCharts() error {
 	if len(pageCharts) == 0 {
 		return nil
 	}
+	cht, err := generateIOChart(b.ioMetrics)
+	if err != nil {
+		return err
+	}
+	pageCharts = append(pageCharts, cht)
 
 	page := components.NewPage()
 	page.SetPageTitle(fmt.Sprintf("%s Charts", b.cfg.ReportNamePrefix))
 	page.AddCharts(pageCharts...)
 	chartsPath := path.Join(b.cfg.ReportDir, fmt.Sprintf("%s-charts.html", b.cfg.ReportNamePrefix))
 
-	err := writePage(chartsPath, page)
+	err = writePage(chartsPath, page)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func createLineCharts(procName string, metrics []Metric) (procCharts []components.Charter, err error) {
+func createProcessLineCharts(procName string, metrics []Metric) (procCharts []components.Charter, err error) {
 	if len(metrics) < 2 {
 		slog.Warn("skipping charts since insufficient metric data points present", "procName", procName)
 		return
@@ -290,6 +394,37 @@ func generateVmsMemoryChart(procName string, metrics []Metric) (*charts.Line, er
 		}))
 	line.SetXAxis(xVals).
 		AddSeries("Memory VMS", yValsVms).
+		SetSeriesOptions(charts.WithLineChartOpts(opts.LineChart{Smooth: opts.Bool(true)}))
+
+	return line, nil
+}
+
+func generateIOChart(ioMetrics []IOMetric) (*charts.Line, error) {
+	var xVals []string
+	var yValsKBt []opts.LineData
+	var yValsTPS []opts.LineData
+	var yValsMBs []opts.LineData
+
+	for _, m := range ioMetrics {
+		xVals = append(xVals, m.ProbeTime.Format("15:04:05"))
+		yValsKBt = append(yValsKBt, opts.LineData{Value: m.KBt})
+		yValsTPS = append(yValsTPS, opts.LineData{Value: m.TPS})
+		yValsMBs = append(yValsMBs, opts.LineData{Value: m.MBs})
+	}
+
+	line := charts.NewLine()
+
+	line.SetGlobalOptions(
+		charts.WithXAxisOpts(opts.XAxis{Name: "Time"}),
+		charts.WithYAxisOpts(opts.YAxis{Name: "I/O rates"}),
+		charts.WithTitleOpts(opts.Title{
+			Title: "System I/O stats",
+			//Subtitle: fmt.Sprintf("Time based over %s interval"),
+		}))
+	line.SetXAxis(xVals).
+		AddSeries("KB/t", yValsKBt).
+		AddSeries("tps", yValsTPS).
+		AddSeries("MB/s", yValsMBs).
 		SetSeriesOptions(charts.WithLineChartOpts(opts.LineChart{Smooth: opts.Bool(true)}))
 
 	return line, nil
