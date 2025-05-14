@@ -164,7 +164,7 @@ func parseIostatOutput(reader io.ReadCloser, addIOMetric func(metric IOMetric)) 
 			return
 		}
 		m.ProbeTime = time.Now()
-		slog.Info("Metric value.", "metric", m)
+		//slog.Info("Metric value.", "metric", m)
 		addIOMetric(m)
 		m = IOMetric{DiskName: m.DiskName}
 	}
@@ -247,7 +247,7 @@ func (b *basicProcessMonitor) monitorProcs() {
 		}
 		metrics = append(metrics, m)
 		b.procMetricsByName[n] = metrics
-		slog.Info("Metric captured", "procName", n, "CPU", m.CPU, "MemRSS", m.MemRSS, "MemVMS", m.MemVMS)
+		slog.Debug("Metric captured", "procName", n, "CPU", m.CPU, "MemRSS", m.MemRSS, "MemVMS", m.MemVMS)
 	}
 	err := b.GenerateCharts()
 	if err != nil {
@@ -323,7 +323,7 @@ func writePage(chartPath string, page *components.Page) error {
 		slog.Error("error writing bytes to file", "error", err)
 		return err
 	}
-	slog.Info("Generated chart", "chartPath", chartPath)
+	slog.Debug("Generated chart", "chartPath", chartPath)
 	return nil
 }
 
