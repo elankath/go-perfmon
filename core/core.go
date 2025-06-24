@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
@@ -23,7 +24,7 @@ import (
 
 type basicProcessMonitor struct {
 	cfg               api.ProcessMonitorConfig
-	procByName        map[string]*process.Process
+	procByKeys        map[string]*process.Process
 	errCounter        int
 	procMetricsByName map[string][]Metric
 	cancel            context.CancelCauseFunc
@@ -52,11 +53,11 @@ func (I IOMetric) String() string {
 func NewBasicProcessMonitor(cfg api.ProcessMonitorConfig) (api.ProcessMonitor, error) {
 	pm := &basicProcessMonitor{
 		cfg:               cfg,
-		procByName:        make(map[string]*process.Process),
+		procByKeys:        make(map[string]*process.Process),
 		procMetricsByName: make(map[string][]Metric),
 	}
 	for _, n := range cfg.ProcessNames {
-		pm.procByName[n] = nil
+		pm.procByKeys[n] = nil
 	}
 	err := os.MkdirAll(cfg.ReportDir, 0755)
 	if err != nil {
@@ -93,7 +94,7 @@ func (b *basicProcessMonitor) Start(ctx context.Context) error {
 						b.cancel(err)
 					}
 					if ok {
-						slog.Info("All processes are registered", "procNames", b.cfg.ProcessNames)
+						slog.Info("All processes are registered", "procKeys", maps.Keys(b.procByKeys))
 						return
 					}
 				}
@@ -202,7 +203,7 @@ func (b *basicProcessMonitor) monitorProcsEveryInterval(ctx context.Context) {
 }
 
 func (b *basicProcessMonitor) monitorProcs() {
-	for n, proc := range b.procByName {
+	for n, proc := range b.procByKeys {
 		if proc == nil {
 			continue
 		}
@@ -216,7 +217,7 @@ func (b *basicProcessMonitor) monitorProcs() {
 		}
 		if !running {
 			slog.Warn("Process is no longer running", "proc", n, "pid", proc.Pid)
-			delete(b.procByName, n)
+			delete(b.procByKeys, n)
 			continue
 		}
 		cpu, err := proc.CPUPercent()
@@ -443,10 +444,10 @@ func (b *basicProcessMonitor) handleMetricErr(err error) (ok bool) {
 }
 
 func (b *basicProcessMonitor) registerProcesses() (ok bool, err error) {
-	var proc *process.Process
 	ok = true
+	var procs []*process.Process
 	for _, n := range b.cfg.ProcessNames {
-		proc, err = findProcessByName(n)
+		procs, err = findProcessesByName(n)
 		if err != nil {
 			if errors.Is(err, api.ErrCannotFindProcess) {
 				slog.Warn("process does not yet exist", "procName", n)
@@ -456,24 +457,30 @@ func (b *basicProcessMonitor) registerProcesses() (ok bool, err error) {
 			}
 			return
 		}
-		slog.Info("Registering process for monitoring", "procName", n, "pid", proc.Pid)
-		b.procByName[n] = proc
+		for _, p := range procs {
+			key := fmt.Sprintf("%s-%d", n, p.Pid)
+			slog.Info("Registering process for monitoring", "procName", n, "pid", p.Pid, "key", key)
+			b.procByKeys[key] = p
+		}
 	}
 	return
 }
 
-func findProcessByName(procName string) (proc *process.Process, err error) {
+func findProcessesByName(procName string) (procs []*process.Process, err error) {
 	pids, err := findPIDsByName(procName)
 	if err != nil {
 		err = fmt.Errorf("%w: failed to find proc for  %q: %w", api.ErrCannotFindProcess, procName, err)
 		return
 	}
-	pid := pids[0]
-	proc, err = process.NewProcess(pid)
-	if err != nil {
-		err = fmt.Errorf("%w: failed to create proc access for %d belonging to %q: %w", api.ErrCannotFindProcess, pid, procName, err)
-		return
-	} //TODO: give something better later.
+	var proc *process.Process
+	for _, pid := range pids {
+		proc, err = process.NewProcess(pid)
+		if err != nil {
+			err = fmt.Errorf("%w: failed to create proc access for %d belonging to %q: %w", api.ErrCannotFindProcess, pid, procName, err)
+			return
+		} //TODO: give something better later.
+		procs = append(procs, proc)
+	}
 	return
 }
 
